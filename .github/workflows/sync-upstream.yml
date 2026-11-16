@@ -1,0 +1,63 @@
+name: Sync Upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'ParkSnoopy/rust-skills'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: actions/checkout@v4 - Check Out Fork
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - name: bash - Merge Upstream and Retain Approved Paths
+        shell: bash
+        env:
+          TARGET_BRANCH: main
+          UPSTREAM_URL: https://github.com/leonardomso/rust-skills
+          UPSTREAM_BRANCH: master
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch "$UPSTREAM_URL" "$UPSTREAM_BRANCH"
+          if ! git merge --no-commit --no-ff FETCH_HEAD; then
+            test "$(git ls-files --unmerged)" != ""
+            git diff --name-only --diff-filter=U -z |
+              git --literal-pathspecs restore --source=FETCH_HEAD --staged --worktree \
+                --pathspec-from-file=- --pathspec-file-nul
+          fi
+          git restore --source=HEAD --staged --worktree -- .github/workflows/sync-upstream.yml
+          # Directory entries retain all tracked descendants.
+          retained=(
+            .github/workflows/sync-upstream.yml
+            SKILL.md
+            rules/
+          )
+          excluded=(':(top,glob,exclude)LICENSE*')
+          for file in "${retained[@]}"; do
+            excluded+=(":(top,exclude,literal)$file")
+          done
+          git rm -r --force --ignore-unmatch -- . "${excluded[@]}"
+
+          test -f SKILL.md && test -d rules
+          test -f .github/workflows/sync-upstream.yml
+          test "$(git ls-files -- . "${excluded[@]}")" = ""
+          if git rev-parse --verify --quiet MERGE_HEAD >/dev/null || ! git diff --cached --quiet; then
+            git commit -m "chore: sync upstream skills"
+            git push origin "HEAD:$TARGET_BRANCH"
+          fi
